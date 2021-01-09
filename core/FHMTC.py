@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from bert_serving.client import BertClient
 from tqdm import tqdm
 from conf.conf import *
@@ -13,8 +12,10 @@ from keras.models import Sequential
 import tensorflow as tf
 import keras.backend.tensorflow_backend as KTF
 import keras.backend as K
-from ternary.event.utils import convert_event_category_json_to_dict
 import matplotlib.pyplot as plt
+
+from networkx import DiGraph
+from ternary.htc.metrics import *
 
 tqdm.pandas()
 
@@ -186,5 +187,22 @@ class FHMTC(object, metaclass=Singleton):
         plt.legend()
 
         plt.show()
+
+        y_prob = model.predict(X_test)
+        y_pred = (y_prob > PROB_RATE).astype(int)
+
+        y_labels = np.loadtxt(DATA_DIR + 'fmc_labels.csv', delimiter=',', dtype='str', encoding='utf-8')
+        hierarchy_graph = DiGraph(convert_event_category_json_to_dict(self.event_category_json))
+
+        print("HTC Evaluation:")
+        h_precision, h_recall, h_fscore = hierarchy_metrics(self.y_test, y_pred, hierarchy_graph, y_labels)
+        print("h_precision: %2.4f" % h_precision)
+        print("h_recall: %2.4f" % h_recall)
+        print("h_fscore: %2.4f" % h_fscore)
+
+        hmdscore = get_HMDScore(y_prob=y_prob, y_test=self.y_test, penalty_coefficient=coefficient_matrix,
+                                threshold=HMDSCORE_THRESHOLD)
+        print("HMDScore : %2.4f" % hmdscore)
+
 
 

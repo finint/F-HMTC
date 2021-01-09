@@ -1,7 +1,6 @@
 from ternary.common.utils import kd_cut
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import csr_matrix
 from itertools import combinations
 import copy
@@ -9,6 +8,9 @@ from scipy import sparse
 import collections
 from multiprocessing import cpu_count, Pool
 import re
+import queue
+
+from networkx import all_pairs_shortest_path_length
 
 
 def parallelize_dataframe(data, func, num_cores=cpu_count()):
@@ -291,3 +293,152 @@ class Singleton(type):
         if cls not in cls._instances:
             cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
         return cls._instances[cls]
+
+
+def convert_event_category_json_to_dict(json):
+    key = "ROOT"
+    q = queue.Queue()
+    hierarchy_dict = {}
+    values = []
+    for child in json["children"]:
+        values.append(child['className'])
+        q.put(child)
+    hierarchy_dict[key] = values
+    while not q.empty():
+        node = q.get()
+        key = node['className']
+        values = []
+        for child in node["children"]:
+            values.append(child['className'])
+            q.put(child)
+        if len(values) > 0:
+            hierarchy_dict[key] = values
+    return hierarchy_dict
+
+
+def find_array_index(array, element):
+    for i in range(len(array)):
+        if array[i] == element:
+            return i
+    return -1
+
+
+def fill_ancestors(y, graph, labels, copy=True):
+    """
+    Compute the full ancestor set for y given as a matrix of 0-1.
+    Each row will be processed and filled in with 1s in indexes corresponding
+    to the (integer) id of the ancestor nodes of those already marked with 1
+    in that row, based on the given class hierarchy graph.
+    :param y: array-like, shape = [n_samples, n_classes].
+        multi-class targets, corresponding to graph node integer ids.
+    :param graph: the class hierarchy graph, given as a `networkx.DiGraph` instance
+    :param labels: labels corresponding to the columns of matrix y
+    :param copy: boolean
+    :return: array-like, shape = [n_samples, n_classes].
+        multi-class targets, corresponding to graph node integer ids with
+        all ancestors of existing labels in matrix filled in, per row.
+    """
+    y_ = y.copy() if copy else y
+    paths = all_pairs_shortest_path_length(graph.reverse(copy=False))
+    for target, distances in paths:
+        idx = find_array_index(labels, target)
+        if idx == -1:
+            continue
+        if sum(y[:, idx]) == 0:
+            continue
+        ix_rows = np.where(y[:, idx] > 0)[0]
+        ancestors = list(distances.keys())
+        for n in ancestors:
+            n_idx = find_array_index(labels, n)
+            if n_idx != -1:
+                y_[ix_rows, n_idx] = 1
+        # y_[np.meshgrid(ix_rows, ancestors)] = 1
+    graph.reverse(copy=False)
+    return y_
+
+
+def h_precision_score(y_true, y_pred, class_hierarchy, labels):
+    """
+    :param y_true: array-like, shape = [n_samples, n_classes].
+        Ground truth multi-class targets.
+    :param y_pred: array-like, shape = [n_samples, n_classes].
+        Predicted multi-class targets.
+    :param class_hierarchy: the class hierarchy graph, given as a `networkx.DiGraph` instance
+        Node ids must be integer and correspond to the indices into the y_true / y_pred matrices.
+    :param labels: array of label names
+        the labels are corresponding to the columns of matrix y
+    :return: float
+        The computed hierarchical precision score.
+    """
+    y_true_ = fill_ancestors(y_true, graph=class_hierarchy, labels=labels)
+    y_pred_ = fill_ancestors(y_pred, graph=class_hierarchy, labels=labels)
+
+    ix = np.where((y_true_ != 0) & (y_pred_ != 0))
+
+    true_positives = len(ix[0])
+    all_results = np.count_nonzero(y_pred_)
+
+    return true_positives / all_results
+
+
+def h_recall_score(y_true, y_pred, class_hierarchy, labels):
+    """
+    :param y_true: array-like, shape = [n_samples, n_classes].
+        Ground truth multi-class targets.
+    :param y_pred: array-like, shape = [n_samples, n_classes].
+        Predicted multi-class targets.
+    :param class_hierarchy: the class hierarchy graph, given as a `networkx.DiGraph` instance.
+        Node ids must be integer and correspond to the indices into the y_true / y_pred matrices.
+    :param labels: array of label names
+        the labels are corresponding to the columns of matrix y
+    :return: float
+        The computed hierarchical recall score.
+    """
+    y_true_ = fill_ancestors(y_true, graph=class_hierarchy, labels=labels)
+    y_pred_ = fill_ancestors(y_pred, graph=class_hierarchy, labels=labels)
+
+    ix = np.where((y_true_ != 0) & (y_pred_ != 0))
+
+    true_positives = len(ix[0])
+    all_positives = np.count_nonzero(y_true_)
+
+    return true_positives / all_positives
+
+
+def hierarchy_metrics(y_true, y_pred, class_hierarchy, labels, beta=1.):
+    """
+    Calculate the hierarchical metrics based on
+    given set of true class labels and predicated class labels, and the
+    class hierarchy graph.
+    For motivation and definition details, see:
+        Functional Annotation of Genes Using Hierarchical Text
+        Categorization, Kiritchenko et al 2008
+        http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.68.5824&rep=rep1&type=pdf
+    :param y_true: array-like, shape = [n_samples, n_classes].
+        Ground truth multi-class targets.
+    :param y_pred: array-like, shape = [n_samples, n_classes].
+        Predicted multi-class targets.
+    :param class_hierarchy: the class hierarchy graph, given as a `networkx.DiGraph` instance
+        Node ids must be integer and correspond to the indices into the y_true / y_pred matrices.
+    :param labels: array of label names
+        the labels are corresponding to the columns of matrix y
+    :param beta: float
+        the beta parameter for the F-beta score. Defaults to F1 score (beta=1).
+    :return: tuple of floats
+        Tuple of classification metrics (h-precision, h-recall, h-fscore)
+    """
+    hP = h_precision_score(y_true, y_pred, class_hierarchy, labels=labels)
+    hR = h_recall_score(y_true, y_pred, class_hierarchy, labels=labels)
+    hF = (1. + beta ** 2.) * hP * hR / (beta ** 2. * hP + hR)
+    return hP, hR, hF
+
+
+def get_HMDScore(y_prob, y_test, penalty_coefficient, threshold=0.15, zoom_penalty=1000):
+    y_pred = (y_prob > threshold).astype(int)
+    y_true = np.stack([y_test] * y_test.shape[1], axis=2)
+    y_pred = np.stack([y_pred] * y_test.shape[1], axis=1)
+    hmd = zoom_penalty * np.mean(np.mean(np.mean(np.square(y_true - y_pred) * penalty_coefficient, axis=-1), axis=-1))
+    hmdscore = 1 - np.tanh(hmd)
+    return hmdscore
+
+
