@@ -1,4 +1,3 @@
-from ternary.common.utils import kd_cut
 import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -9,6 +8,7 @@ import collections
 from multiprocessing import cpu_count, Pool
 import re
 import queue
+import jieba
 
 from networkx import all_pairs_shortest_path_length
 
@@ -21,6 +21,14 @@ def parallelize_dataframe(data, func, num_cores=cpu_count()):
     pool.close()
     pool.join()
     return df
+
+
+def kd_cut(body, enable_stop_words=False, enable_parallel=False):
+    # TODO enable parallel
+    if body is None:
+        body = ''
+    words = jieba.cut(body)
+    return words
 
 
 def clean_text(text):

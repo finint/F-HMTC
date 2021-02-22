@@ -15,7 +15,6 @@ import keras.backend as K
 import matplotlib.pyplot as plt
 
 from networkx import DiGraph
-from ternary.htc.metrics import *
 
 tqdm.pandas()
 
